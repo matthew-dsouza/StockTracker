@@ -36,6 +36,22 @@ public class StockTracker {
         String input = scanner.nextLine();
         String[] symbols = input.split(",");
 
+        // 🔔 Setup price alerts
+        Map<String, Double> alertThresholds = new HashMap<>();
+        for (String rawSymbol : symbols) {
+            String symbol = rawSymbol.trim().toUpperCase();
+            System.out.print("Set price alert for " + symbol + " (leave blank to skip): ");
+            String alertInput = scanner.nextLine();
+            if (!alertInput.isEmpty()) {
+                try {
+                    double alertPrice = Double.parseDouble(alertInput);
+                    alertThresholds.put(symbol, alertPrice);
+                } catch (NumberFormatException e) {
+                    System.out.println("Invalid number. Skipping alert for " + symbol);
+                }
+            }
+        }
+
         Map<String, Double> lastPrices = new HashMap<>();
         writeCsvHeaderIfNotExists(CSV_FILE);
 
@@ -51,17 +67,29 @@ public class StockTracker {
                     lastPrices.put(symbol, price);
 
                     // 🧠 Calculate percent change
-                    String percentChange = "-";
+                    String percentChangeText = "-";
+                    double changePercent = 0;
                     if (lastPrice > 0) {
-                        double change = ((price - lastPrice) / lastPrice) * 100;
-                        percentChange = String.format("%.2f%%", change);
+                        changePercent = ((price - lastPrice) / lastPrice) * 100;
+                        percentChangeText = String.format("%.2f%%", changePercent);
                     }
 
                     String arrow = getStatusArrow(price, lastPrice);
                     String priceFormatted = String.format("%.2f USD", price);
 
-                    System.out.println(symbol + ": $" + priceFormatted + " " + arrow + " | Change: " + percentChange);
-                    appendToCsv(CSV_FILE, symbol, priceFormatted);
+                    // 🚨 Price alert check
+                    if (alertThresholds.containsKey(symbol)) {
+                        double alertPrice = alertThresholds.get(symbol);
+                        if (price >= alertPrice) {
+                            System.out.println("\u001B[33m[ALERT]\u001B[0m " + symbol + " has reached $" + price + " (Target: $" + alertPrice + ")");
+                        }
+                    }
+
+                    // 📺 Console display
+                    System.out.println(symbol + ": $" + priceFormatted + " " + arrow + " | Change: " + percentChangeText);
+
+                    // 📝 CSV logging
+                    appendToCsv(CSV_FILE, symbol, priceFormatted, percentChangeText);
 
                 } catch (Exception e) {
                     System.out.println(symbol + ": Error - " + e.getMessage());
@@ -107,17 +135,17 @@ public class StockTracker {
         File file = new File(fileName);
         if (!file.exists()) {
             try (PrintWriter writer = new PrintWriter(new FileWriter(fileName, true))) {
-                writer.println("Time,Symbol,Price (USD)");
+                writer.println("Date,Time,Symbol,Price (USD),% Change");
             } catch (IOException e) {
                 System.out.println("Failed to write CSV header: " + e.getMessage());
             }
         }
     }
 
-    private static void appendToCsv(String fileName, String symbol, String price) {
+    private static void appendToCsv(String fileName, String symbol, String price, String percentChange) {
         String time = LocalDateTime.now().format(TIME_FORMAT);
         try (PrintWriter writer = new PrintWriter(new FileWriter(fileName, true))) {
-            writer.println(time + "," + symbol + "," + price);
+            writer.println(time + "," + symbol + "," + price + "," + percentChange);
         } catch (IOException e) {
             System.out.println("Failed to write to CSV: " + e.getMessage());
         }
