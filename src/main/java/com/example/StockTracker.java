@@ -11,7 +11,6 @@ import com.google.gson.JsonParser;
 
 public class StockTracker {
 
-    static final int REFRESH_INTERVAL = 30; // in seconds
     static final String CSV_FILE = "prices.csv";
     static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a");
 
@@ -19,6 +18,20 @@ public class StockTracker {
         Scanner scanner = new Scanner(System.in);
         String apiKey = ConfigLoader.getApiKey();
 
+        // 🔧 Let user set refresh interval
+        System.out.print("Enter refresh interval in seconds (default 20): ");
+        String refreshInput = scanner.nextLine();
+        int refreshInterval = 20; // default
+
+        try {
+            if (!refreshInput.isEmpty()) {
+                refreshInterval = Integer.parseInt(refreshInput);
+            }
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid input. Using default 20 seconds.");
+        }
+
+        // 🔧 Input stock symbols
         System.out.print("Enter stock symbols separated by commas (e.g., AAPL,GOOGL,MSFT): ");
         String input = scanner.nextLine();
         String[] symbols = input.split(",");
@@ -37,10 +50,17 @@ public class StockTracker {
                     double lastPrice = lastPrices.getOrDefault(symbol, -1.0);
                     lastPrices.put(symbol, price);
 
+                    // 🧠 Calculate percent change
+                    String percentChange = "-";
+                    if (lastPrice > 0) {
+                        double change = ((price - lastPrice) / lastPrice) * 100;
+                        percentChange = String.format("%.2f%%", change);
+                    }
+
                     String arrow = getStatusArrow(price, lastPrice);
                     String priceFormatted = String.format("%.2f USD", price);
 
-                    System.out.println(symbol + ": $" + priceFormatted + " " + arrow);
+                    System.out.println(symbol + ": $" + priceFormatted + " " + arrow + " | Change: " + percentChange);
                     appendToCsv(CSV_FILE, symbol, priceFormatted);
 
                 } catch (Exception e) {
@@ -49,7 +69,7 @@ public class StockTracker {
             }
 
             try {
-                Thread.sleep(REFRESH_INTERVAL * 1000L);
+                Thread.sleep(refreshInterval * 1000L);
             } catch (InterruptedException e) {
                 System.out.println("Interrupted");
                 break;
