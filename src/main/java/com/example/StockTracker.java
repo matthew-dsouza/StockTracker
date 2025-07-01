@@ -1,153 +1,183 @@
 package com.example;
 
-import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.*;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
+import javafx.application.Application;
+import javafx.geometry.Insets;
+import javafx.scene.Scene;
+import javafx.scene.chart.LineChart;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.XYChart;
+import javafx.scene.control.*;
+import javafx.scene.layout.*;
+import javafx.stage.Stage;
+import javafx.util.Duration;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-public class StockTracker {
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.*;
 
-    static final String CSV_FILE = "prices.csv";
-    static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a");
+public class StockTracker extends Application {
+
+    private TableView<StockData> table;
+    private final Map<String, Double> lastPrices = new HashMap<>();
+    private final Map<String, Double> alertThresholds = new HashMap<>();
+    private final Map<String, XYChart.Series<Number, Number>> seriesMap = new HashMap<>();
+    private final NumberAxis xAxis = new NumberAxis();
+    private final NumberAxis yAxis = new NumberAxis();
+    private final LineChart<Number, Number> lineChart = new LineChart<>(xAxis, yAxis);
+    private int refreshInterval = 20;
+    private int timeIndex = 0;
+    private Timeline timeline;
 
     public static void main(String[] args) {
-        Scanner scanner = new Scanner(System.in);
-        String apiKey = ConfigLoader.getApiKey();
+        launch(args);
+    }
 
-        // 🔧 Let user set refresh interval
-        System.out.print("Enter refresh interval in seconds (default 20): ");
-        String refreshInput = scanner.nextLine();
-        int refreshInterval = 20; // default
+    @Override
+    public void start(Stage stage) {
+        stage.setTitle("Real-Time Stock Tracker");
 
-        try {
-            if (!refreshInput.isEmpty()) {
-                refreshInterval = Integer.parseInt(refreshInput);
+        // UI Elements
+        TextField symbolsInput = new TextField();
+        symbolsInput.setPromptText("Enter symbols: AAPL,GOOGL");
+
+        TextField intervalInput = new TextField("20");
+        intervalInput.setPromptText("Refresh (sec)");
+
+        Button startButton = new Button("Start");
+        Button stopButton = new Button("Stop");
+        stopButton.setDisable(true);  // disabled by default
+
+        HBox inputBox = new HBox(10, new Label("Symbols:"), symbolsInput, new Label("Interval:"), intervalInput, startButton, stopButton);
+        inputBox.setPadding(new Insets(10));
+
+        // Table setup
+        table = new TableView<>();
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        table.getColumns().addAll(
+                createColumn("Symbol", "symbol"),
+                createColumn("Price (USD)", "price"),
+                createColumn("% Change", "change"),
+                createColumn("Alert", "alertStatus")
+        );
+
+        // Chart setup
+        lineChart.setTitle("Stock Price History");
+        lineChart.setAnimated(false);
+        lineChart.setLegendVisible(true);
+
+        VBox root = new VBox(10, inputBox, table, lineChart);
+        root.setPadding(new Insets(10));
+
+        Scene scene = new Scene(root, 900, 600);
+        stage.setScene(scene);
+        stage.show();
+
+        // Button actions
+        startButton.setOnAction(e -> {
+            String[] symbols = symbolsInput.getText().split(",");
+            try {
+                refreshInterval = Integer.parseInt(intervalInput.getText());
+            } catch (NumberFormatException ex) {
+                refreshInterval = 20;
             }
-        } catch (NumberFormatException e) {
-            System.out.println("Invalid input. Using default 20 seconds.");
-        }
 
-        // 🔧 Input stock symbols
-        System.out.print("Enter stock symbols separated by commas (e.g., AAPL,GOOGL,MSFT): ");
-        String input = scanner.nextLine();
-        String[] symbols = input.split(",");
+            setupAlertDialog(symbols);
+            startAutoRefresh(symbols);
+            startButton.setDisable(true);
+            stopButton.setDisable(false);
+        });
 
-        // 🔔 Setup price alerts
-        Map<String, Double> alertThresholds = new HashMap<>();
+        stopButton.setOnAction(e -> {
+            if (timeline != null) {
+                timeline.stop();
+            }
+            startButton.setDisable(false);
+            stopButton.setDisable(true);
+        });
+    }
+
+    private void setupAlertDialog(String[] symbols) {
         for (String rawSymbol : symbols) {
             String symbol = rawSymbol.trim().toUpperCase();
-            System.out.print("Set price alert for " + symbol + " (leave blank to skip): ");
-            String alertInput = scanner.nextLine();
-            if (!alertInput.isEmpty()) {
+            TextInputDialog dialog = new TextInputDialog();
+            dialog.setTitle("Price Alert");
+            dialog.setHeaderText("Set Alert for " + symbol);
+            dialog.setContentText("Alert if price crosses (leave blank to skip):");
+
+            dialog.showAndWait().ifPresent(input -> {
                 try {
-                    double alertPrice = Double.parseDouble(alertInput);
-                    alertThresholds.put(symbol, alertPrice);
-                } catch (NumberFormatException e) {
-                    System.out.println("Invalid number. Skipping alert for " + symbol);
-                }
-            }
-        }
-
-        Map<String, Double> lastPrices = new HashMap<>();
-        writeCsvHeaderIfNotExists(CSV_FILE);
-
-        while (true) {
-            System.out.println("\n--- Stock Prices (" + LocalDateTime.now().format(TIME_FORMAT) + ") ---");
-
-            for (String rawSymbol : symbols) {
-                String symbol = rawSymbol.trim().toUpperCase();
-
-                try {
-                    double price = fetchStockPrice(symbol, apiKey);
-                    double lastPrice = lastPrices.getOrDefault(symbol, -1.0);
-                    lastPrices.put(symbol, price);
-
-                    // 🧠 Calculate percent change
-                    String percentChangeText = "-";
-                    double changePercent = 0;
-                    if (lastPrice > 0) {
-                        changePercent = ((price - lastPrice) / lastPrice) * 100;
-                        percentChangeText = String.format("%.2f%%", changePercent);
+                    if (!input.isBlank()) {
+                        alertThresholds.put(symbol, Double.parseDouble(input));
                     }
-
-                    String arrow = getStatusArrow(price, lastPrice);
-                    String priceFormatted = String.format("%.2f USD", price);
-
-                    // 🚨 Price alert check
-                    if (alertThresholds.containsKey(symbol)) {
-                        double alertPrice = alertThresholds.get(symbol);
-                        if (price >= alertPrice) {
-                            System.out.println("\u001B[33m[ALERT]\u001B[0m " + symbol + " has reached $" + price + " (Target: $" + alertPrice + ")");
-                        }
-                    }
-
-                    // 📺 Console display
-                    System.out.println(symbol + ": $" + priceFormatted + " " + arrow + " | Change: " + percentChangeText);
-
-                    // 📝 CSV logging
-                    appendToCsv(CSV_FILE, symbol, priceFormatted, percentChangeText);
-
-                } catch (Exception e) {
-                    System.out.println(symbol + ": Error - " + e.getMessage());
-                }
-            }
-
-            try {
-                Thread.sleep(refreshInterval * 1000L);
-            } catch (InterruptedException e) {
-                System.out.println("Interrupted");
-                break;
-            }
+                } catch (NumberFormatException ignored) {}
+            });
         }
     }
 
-    private static double fetchStockPrice(String symbol, String apiKey) throws Exception {
-        String urlString = "https://api.twelvedata.com/price?symbol=" + symbol + "&apikey=" + apiKey;
+    private void startAutoRefresh(String[] symbols) {
+        timeIndex = 0;
+        lastPrices.clear();
+        seriesMap.clear();
+        lineChart.getData().clear();
 
-        URL url = new URL(urlString);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        timeline = new Timeline(new KeyFrame(Duration.seconds(refreshInterval), e -> {
+            timeIndex++;
+            List<StockData> updated = new ArrayList<>();
+
+            for (String raw : symbols) {
+                String symbol = raw.trim().toUpperCase();
+                try {
+                    double price = fetchPrice(symbol);
+                    double last = lastPrices.getOrDefault(symbol, -1.0);
+                    lastPrices.put(symbol, price);
+
+                    double changePercent = (last > 0) ? ((price - last) / last) * 100 : 0;
+                    String changeStr = (last > 0) ? String.format("%.2f%%", changePercent) : "-";
+                    String alertStr = alertThresholds.containsKey(symbol) && price >= alertThresholds.get(symbol)
+                            ? "🔔 Triggered!" : "-";
+
+                    updated.add(new StockData(symbol, String.format("%.2f", price), changeStr, alertStr));
+
+                    XYChart.Series<Number, Number> series = seriesMap.computeIfAbsent(symbol, key -> {
+                        XYChart.Series<Number, Number> newSeries = new XYChart.Series<>();
+                        newSeries.setName(key);
+                        lineChart.getData().add(newSeries);
+                        return newSeries;
+                    });
+
+                    series.getData().add(new XYChart.Data<>(timeIndex, price));
+
+                } catch (Exception ex) {
+                    updated.add(new StockData(symbol, "Error", "-", "-"));
+                }
+            }
+
+            table.getItems().setAll(updated);
+        }));
+        timeline.setCycleCount(Timeline.INDEFINITE);
+        timeline.play();
+    }
+
+    private double fetchPrice(String symbol) throws Exception {
+        String url = "https://api.twelvedata.com/price?symbol=" + symbol + "&apikey=" + ConfigLoader.getApiKey();
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod("GET");
 
         InputStreamReader reader = new InputStreamReader(conn.getInputStream());
         JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
 
-        if (json.has("price")) {
-            return Double.parseDouble(json.get("price").getAsString());
-        } else if (json.has("message")) {
-            throw new Exception(json.get("message").getAsString());
-        }
-
-        throw new Exception("Unexpected response from API");
+        if (json.has("price")) return Double.parseDouble(json.get("price").getAsString());
+        throw new Exception(json.has("message") ? json.get("message").getAsString() : "Unknown error");
     }
 
-    private static String getStatusArrow(double price, double lastPrice) {
-        if (lastPrice < 0) return "-";
-        if (price > lastPrice) return "\u001B[32m↑\u001B[0m"; // Green up
-        if (price < lastPrice) return "\u001B[31m↓\u001B[0m"; // Red down
-        return "-";
-    }
-
-    private static void writeCsvHeaderIfNotExists(String fileName) {
-        File file = new File(fileName);
-        if (!file.exists()) {
-            try (PrintWriter writer = new PrintWriter(new FileWriter(fileName, true))) {
-                writer.println("Date,Time,Symbol,Price (USD),% Change");
-            } catch (IOException e) {
-                System.out.println("Failed to write CSV header: " + e.getMessage());
-            }
-        }
-    }
-
-    private static void appendToCsv(String fileName, String symbol, String price, String percentChange) {
-        String time = LocalDateTime.now().format(TIME_FORMAT);
-        try (PrintWriter writer = new PrintWriter(new FileWriter(fileName, true))) {
-            writer.println(time + "," + symbol + "," + price + "," + percentChange);
-        } catch (IOException e) {
-            System.out.println("Failed to write to CSV: " + e.getMessage());
-        }
+    private TableColumn<StockData, String> createColumn(String title, String property) {
+        TableColumn<StockData, String> col = new TableColumn<>(title);
+        col.setCellValueFactory(cellData -> cellData.getValue().getProperty(property));
+        return col;
     }
 }
